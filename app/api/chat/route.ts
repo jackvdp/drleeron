@@ -5,6 +5,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Helper function to create a delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export async function POST(req: NextRequest) {
   try {
     const { messages, vectorStoreId } = await req.json();
@@ -96,16 +99,20 @@ Keep your responses conversational but professional.`,
     // Create a streaming response format that matches your frontend
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      start(controller) {
-        // Send the complete text as chunks for smooth display
+      async start(controller) {
+        // Split by words for streaming
         const words = assistantText.split(' ');
         let currentText = '';
 
-        words.forEach((word, index) => {
-          currentText += (index > 0 ? ' ' : '') + word;
+        for (let i = 0; i < words.length; i++) {
+          currentText += (i > 0 ? ' ' : '') + words[i];
           const data = `0:${JSON.stringify(currentText)}\n`;
           controller.enqueue(encoder.encode(data));
-        });
+
+          // Add a small delay between words to create streaming effect
+          // Adjust this value to control streaming speed (lower = faster)
+          await delay(30);
+        }
 
         // If there are citations, send them as metadata
         if (citations.length > 0) {
