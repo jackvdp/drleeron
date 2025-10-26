@@ -151,7 +151,7 @@ export default function Chat() {
     }
   };
 
-  // Send message and handle streaming response
+  // Send message and handle TRUE streaming from API route
   const sendMessage = async (userMessage: string) => {
     if (!userMessage.trim()) return;
 
@@ -189,7 +189,7 @@ export default function Chat() {
         throw new Error('Failed to get response');
       }
 
-      // Read the stream
+      // Read the TRUE streaming response from OpenAI
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
 
@@ -212,7 +212,7 @@ export default function Chat() {
               const textChunk = JSON.parse(line.slice(2));
               accumulatedText = textChunk;
 
-              // Update the assistant message with accumulated text
+              // Update the assistant message with streamed text
               setMessages((prev) =>
                   prev.map((msg) =>
                       msg.id === assistantMsgId
