@@ -126,17 +126,18 @@ export default function Chat() {
     }
   };
 
-  // Speak the AI's response
+  // Speak the AI's response with streaming audio
   const speakText = async (text: string) => {
-    // Initialize or resume AudioContext on user gesture (this is synchronous)
+    // Initialize or resume AudioContext on user gesture
     if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
+      audioContextRef.current = new AudioContext({ sampleRate: 24000 }); // OpenAI TTS uses 24kHz
     }
     if (audioContextRef.current.state === 'suspended') {
       await audioContextRef.current.resume();
     }
 
     setIsSpeaking(true);
+    
     try {
       const response = await fetch('/api/speak', {
         method: 'POST',
@@ -144,18 +145,64 @@ export default function Chat() {
         body: JSON.stringify({ text }),
       });
 
-      const arrayBuffer = await response.arrayBuffer();
-      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-      
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      
-      source.onended = () => {
-        setIsSpeaking(false);
-      };
+      if (!response.body) {
+        throw new Error('No response body');
+      }
 
-      source.start(0);
+      const reader = response.body.getReader();
+      const audioContext = audioContextRef.current;
+      
+      // Queue for scheduling audio chunks
+      let nextStartTime = audioContext.currentTime;
+      const chunks: Int16Array[] = [];
+      let leftover = new Uint8Array(0);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Combine leftover bytes with new chunk
+        const combined = new Uint8Array(leftover.length + value.length);
+        combined.set(leftover);
+        combined.set(value, leftover.length);
+
+        // PCM 16-bit needs even number of bytes
+        const usableLength = combined.length - (combined.length % 2);
+        leftover = combined.slice(usableLength);
+
+        if (usableLength === 0) continue;
+
+        // Convert to Int16Array (PCM 16-bit little-endian)
+        const pcmData = new Int16Array(combined.slice(0, usableLength).buffer);
+        chunks.push(pcmData);
+
+        // Convert to Float32 for Web Audio API
+        const floatData = new Float32Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+          floatData[i] = pcmData[i] / 32768; // Normalize to -1 to 1
+        }
+
+        // Create audio buffer and schedule playback
+        const audioBuffer = audioContext.createBuffer(1, floatData.length, 24000);
+        audioBuffer.getChannelData(0).set(floatData);
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+
+        // Schedule this chunk to play after previous chunks
+        const startTime = Math.max(nextStartTime, audioContext.currentTime);
+        source.start(startTime);
+        nextStartTime = startTime + audioBuffer.duration;
+      }
+
+      // Wait for all audio to finish playing
+      const remainingTime = nextStartTime - audioContext.currentTime;
+      if (remainingTime > 0) {
+        await new Promise(resolve => setTimeout(resolve, remainingTime * 1000));
+      }
+      
+      setIsSpeaking(false);
     } catch (error) {
       console.error('Error playing audio:', error);
       setIsSpeaking(false);
