@@ -45,6 +45,7 @@ export default function Chat() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   // Load vector stores on mount
   useEffect(() => {
@@ -127,6 +128,14 @@ export default function Chat() {
 
   // Speak the AI's response
   const speakText = async (text: string) => {
+    // Initialize or resume AudioContext on user gesture (this is synchronous)
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume();
+    }
+
     setIsSpeaking(true);
     try {
       const response = await fetch('/api/speak', {
@@ -135,16 +144,18 @@ export default function Chat() {
         body: JSON.stringify({ text }),
       });
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-
-      audio.onended = () => {
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
+      
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContextRef.current.destination);
+      
+      source.onended = () => {
         setIsSpeaking(false);
-        URL.revokeObjectURL(audioUrl);
       };
 
-      audio.play();
+      source.start(0);
     } catch (error) {
       console.error('Error playing audio:', error);
       setIsSpeaking(false);
