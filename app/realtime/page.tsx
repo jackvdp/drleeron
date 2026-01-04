@@ -219,8 +219,12 @@ export default function RealtimeChat() {
         setIsListening(true);
         
         // BARGE-IN: Stop AI audio and cancel response when user starts speaking
-        stopAllAudio();
-        cancelResponse();
+        // Only cancel if AI is actually speaking or generating
+        if (isSpeaking || isThinking || isSearching) {
+          console.log('Barge-in detected - stopping AI');
+          stopAllAudio();
+          cancelResponse();
+        }
         
         // Clear sources and search status for new conversation turn
         setSources([]);
@@ -233,16 +237,31 @@ export default function RealtimeChat() {
         console.log('User stopped speaking');
         // User finished speaking - AI will start thinking
         setIsThinking(true);
+        setIsListening(false);
         break;
 
       case 'input_audio_buffer.committed':
-        // Audio was committed for processing
+        // Audio was committed for processing - definitely thinking now
+        console.log('Audio committed - AI processing');
+        setIsThinking(true);
+        break;
+
+      case 'conversation.item.created':
+        // A conversation item was created (user's audio transcription started)
+        console.log('Conversation item created');
         setIsThinking(true);
         break;
 
       case 'response.created':
         // Response is being generated - might be searching
+        console.log('Response created - generating');
         setIsSearching(true);
+        setIsThinking(true);
+        break;
+
+      case 'response.output_item.added':
+        // Output item added - still processing
+        console.log('Output item added');
         setIsThinking(true);
         break;
 
@@ -331,7 +350,11 @@ export default function RealtimeChat() {
 
       case 'error':
         console.error('Server error:', event);
-        setError((event.error as { message?: string })?.message || 'Unknown error');
+        const errorMessage = (event.error as { message?: string })?.message || 'Unknown error';
+        // Don't show "no active response" error - it's expected when cancelling with nothing to cancel
+        if (!errorMessage.includes('no active response')) {
+          setError(errorMessage);
+        }
         break;
 
       default:
@@ -340,7 +363,7 @@ export default function RealtimeChat() {
           console.log('Unhandled event:', eventType, event);
         }
     }
-  }, [stopAllAudio, cancelResponse]);
+  }, [stopAllAudio, cancelResponse, isSpeaking, isThinking, isSearching]);
 
   // Play audio chunk received from the server
   const playAudioChunk = useCallback((base64Audio: string) => {
@@ -465,7 +488,7 @@ export default function RealtimeChat() {
                   </div>
                 )}
 
-                {isThinking && !isSpeaking && !isSearching && (
+                {isThinking && !isSpeaking && !isSearching && !isListening && (
                   <div className="flex items-center gap-2">
                     <span className="text-purple-500 animate-pulse">🧠 Thinking...</span>
                   </div>
