@@ -437,7 +437,11 @@ export default function RealtimeChat() {
         {/* Title */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-light text-white/90 tracking-wide">Dr Leeron</h1>
-          <p className="text-white/50 text-sm mt-2">RANZCP MEQ Tutor</p>
+          <p className="text-white/50 text-sm mt-2 mb-4">RANZCP MEQ Voice Tutor</p>
+          <p className="text-white/40 text-sm max-w-md mx-auto leading-relaxed">
+            Practice for your RANZCP MEQ exam with AI-guided Socratic questioning. 
+            Speak naturally and I'll help you work through clinical scenarios.
+          </p>
         </div>
 
         {/* Central Orb */}
