@@ -34,6 +34,7 @@ export default function RealtimeChat() {
   const [sources, setSources] = useState<GroundingSource[]>([]);
   const [searchStatus, setSearchStatus] = useState<SearchStatus | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -41,6 +42,7 @@ export default function RealtimeChat() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackTimeRef = useRef<number>(0);
+  const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
   // Connect to the WebSocket server
   const connect = useCallback(async () => {
@@ -157,6 +159,33 @@ export default function RealtimeChat() {
     setIsListening(true);
   }, []);
 
+  // Stop all currently playing audio (for interruption/barge-in)
+  const stopAllAudio = useCallback(() => {
+    // Stop all active audio sources
+    activeAudioSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Ignore errors if already stopped
+      }
+    });
+    activeAudioSourcesRef.current = [];
+    
+    // Reset playback time to now
+    if (audioContextRef.current) {
+      playbackTimeRef.current = audioContextRef.current.currentTime;
+    }
+    
+    setIsSpeaking(false);
+  }, []);
+
+  // Send cancel response to server (to stop AI from generating more)
+  const cancelResponse = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'response.cancel' }));
+    }
+  }, []);
+
   // Stop capturing audio
   const stopAudioCapture = useCallback(() => {
     if (processorRef.current) {
@@ -188,19 +217,33 @@ export default function RealtimeChat() {
       case 'input_audio_buffer.speech_started':
         console.log('User started speaking');
         setIsListening(true);
+        
+        // BARGE-IN: Stop AI audio and cancel response when user starts speaking
+        stopAllAudio();
+        cancelResponse();
+        
         // Clear sources and search status for new conversation turn
         setSources([]);
         setSearchStatus(null);
         setIsSearching(false);
+        setIsThinking(false);
         break;
 
       case 'input_audio_buffer.speech_stopped':
         console.log('User stopped speaking');
+        // User finished speaking - AI will start thinking
+        setIsThinking(true);
+        break;
+
+      case 'input_audio_buffer.committed':
+        // Audio was committed for processing
+        setIsThinking(true);
         break;
 
       case 'response.created':
         // Response is being generated - might be searching
         setIsSearching(true);
+        setIsThinking(true);
         break;
 
       case 'search.completed':
@@ -255,16 +298,27 @@ export default function RealtimeChat() {
         // Audio chunk from assistant - play it
         playAudioChunk(event.delta as string);
         setIsSpeaking(true);
+        setIsThinking(false); // No longer thinking once audio starts
         break;
 
       case 'response.audio.done':
         setIsSpeaking(false);
         setIsSearching(false);
+        setIsThinking(false);
         break;
 
       case 'response.done':
         setIsSpeaking(false);
         setIsSearching(false);
+        setIsThinking(false);
+        break;
+
+      case 'response.cancelled':
+        // Response was cancelled (e.g., due to barge-in)
+        console.log('Response cancelled');
+        setIsSpeaking(false);
+        setIsSearching(false);
+        setIsThinking(false);
         break;
 
       case 'grounding.sources':
@@ -286,7 +340,7 @@ export default function RealtimeChat() {
           console.log('Unhandled event:', eventType, event);
         }
     }
-  }, []);
+  }, [stopAllAudio, cancelResponse]);
 
   // Play audio chunk received from the server
   const playAudioChunk = useCallback((base64Audio: string) => {
@@ -314,6 +368,17 @@ export default function RealtimeChat() {
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
+
+      // Track this source for potential interruption
+      activeAudioSourcesRef.current.push(source);
+      
+      // Remove from tracking when done
+      source.onended = () => {
+        const index = activeAudioSourcesRef.current.indexOf(source);
+        if (index > -1) {
+          activeAudioSourcesRef.current.splice(index, 1);
+        }
+      };
 
       // Schedule playback
       const startTime = Math.max(playbackTimeRef.current, audioContextRef.current.currentTime);
@@ -397,6 +462,12 @@ export default function RealtimeChat() {
                 {isSpeaking && (
                   <div className="flex items-center gap-2">
                     <span className="text-blue-500">🔊 Speaking...</span>
+                  </div>
+                )}
+
+                {isThinking && !isSpeaking && !isSearching && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-purple-500 animate-pulse">🧠 Thinking...</span>
                   </div>
                 )}
 
@@ -484,7 +555,7 @@ export default function RealtimeChat() {
         <div className="p-4 border-t">
           <p className="text-center text-sm text-muted-foreground">
             {status === 'connected'
-              ? 'Speak naturally - the AI will respond when you pause'
+              ? 'Speak naturally - the AI will respond when you pause. Start speaking to interrupt.'
               : 'Connect to start a voice conversation'}
           </p>
         </div>
