@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Mic, Send, Volume2, Database, X, MessageSquare, BookOpen } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 type MessagePart = {
   type: 'text';
@@ -46,7 +47,12 @@ export default function Chat() {
     try {
       const response = await fetch('/api/vector-store');
       const data = await response.json();
-      setVectorStores(data.vectorStores || []);
+      const stores = data.vectorStores || [];
+      setVectorStores(stores);
+      // Default to first vector store if available
+      if (stores.length > 0 && !selectedVectorStore) {
+        setSelectedVectorStore(stores[0].id);
+      }
     } catch (error) {
       console.error('Error loading vector stores:', error);
     }
@@ -411,11 +417,40 @@ export default function Chat() {
                         : 'bg-white/10 text-white/90 border border-white/10'
                     }`}
                   >
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                    <div className="prose prose-sm prose-invert max-w-none">
                       {message.parts.map((part, i) => (
-                        part.type === 'text' ? <span key={i}>{part.text}</span> : null
+                        part.type === 'text' ? (
+                          <ReactMarkdown
+                            key={i}
+                            components={{
+                              p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                              ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+                              ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+                              li: ({ children }) => <li className="text-sm">{children}</li>,
+                              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                              em: ({ children }) => <em className="italic">{children}</em>,
+                              code: ({ children }) => (
+                                <code className="bg-white/10 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>
+                              ),
+                              pre: ({ children }) => (
+                                <pre className="bg-white/10 p-3 rounded-lg overflow-x-auto my-2 text-xs">{children}</pre>
+                              ),
+                              h1: ({ children }) => <h1 className="text-lg font-semibold mb-2">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-base font-semibold mb-2">{children}</h2>,
+                              h3: ({ children }) => <h3 className="text-sm font-semibold mb-1">{children}</h3>,
+                              blockquote: ({ children }) => (
+                                <blockquote className="border-l-2 border-white/30 pl-3 italic my-2">{children}</blockquote>
+                              ),
+                              a: ({ href, children }) => (
+                                <a href={href} className="text-blue-300 hover:text-blue-200 underline" target="_blank" rel="noopener noreferrer">{children}</a>
+                              ),
+                            }}
+                          >
+                            {part.text}
+                          </ReactMarkdown>
+                        ) : null
                       ))}
-                    </p>
+                    </div>
                     {message.role === 'assistant' && message.parts[0].text && (
                       <button
                         onClick={() => {
