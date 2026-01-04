@@ -1,9 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
+import { Phone, PhoneOff, Mic, BookOpen } from 'lucide-react';
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -36,6 +34,7 @@ export default function RealtimeChat() {
   const [isSearching, setIsSearching] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -43,6 +42,18 @@ export default function RealtimeChat() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackTimeRef = useRef<number>(0);
   const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const hasConnectedRef = useRef(false);
+
+  // Get the current activity state for the orb
+  const getActivityState = () => {
+    if (isListening) return 'listening';
+    if (isSpeaking) return 'speaking';
+    if (isSearching) return 'searching';
+    if (isThinking) return 'thinking';
+    return 'idle';
+  };
+
+  const activityState = getActivityState();
 
   // Connect to the WebSocket server
   const connect = useCallback(async () => {
@@ -119,6 +130,14 @@ export default function RealtimeChat() {
     setIsSpeaking(false);
   }, []);
 
+  // Auto-connect on mount
+  useEffect(() => {
+    if (!hasConnectedRef.current) {
+      hasConnectedRef.current = true;
+      connect();
+    }
+  }, [connect]);
+
   // Start capturing audio from microphone
   const startAudioCapture = useCallback(() => {
     if (!audioContextRef.current || !mediaStreamRef.current || !wsRef.current) return;
@@ -126,8 +145,6 @@ export default function RealtimeChat() {
     const audioContext = audioContextRef.current;
     const source = audioContext.createMediaStreamSource(mediaStreamRef.current);
 
-    // Use ScriptProcessorNode to capture raw PCM data
-    // Note: ScriptProcessorNode is deprecated but AudioWorklet requires more setup
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
     processorRef.current = processor;
 
@@ -136,14 +153,12 @@ export default function RealtimeChat() {
 
       const inputData = e.inputBuffer.getChannelData(0);
 
-      // Convert Float32 to Int16 PCM
       const pcmData = new Int16Array(inputData.length);
       for (let i = 0; i < inputData.length; i++) {
         const s = Math.max(-1, Math.min(1, inputData[i]));
         pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
 
-      // Convert to base64 and send
       const base64 = btoa(String.fromCharCode(...new Uint8Array(pcmData.buffer)));
 
       wsRef.current.send(
@@ -159,19 +174,16 @@ export default function RealtimeChat() {
     setIsListening(true);
   }, []);
 
-  // Stop all currently playing audio (for interruption/barge-in)
   const stopAllAudio = useCallback(() => {
-    // Stop all active audio sources
     activeAudioSourcesRef.current.forEach((source) => {
       try {
         source.stop();
       } catch {
-        // Ignore errors if already stopped
+        // Ignore
       }
     });
     activeAudioSourcesRef.current = [];
     
-    // Reset playback time to now
     if (audioContextRef.current) {
       playbackTimeRef.current = audioContextRef.current.currentTime;
     }
@@ -179,14 +191,12 @@ export default function RealtimeChat() {
     setIsSpeaking(false);
   }, []);
 
-  // Send cancel response to server (to stop AI from generating more)
   const cancelResponse = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'response.cancel' }));
     }
   }, []);
 
-  // Stop capturing audio
   const stopAudioCapture = useCallback(() => {
     if (processorRef.current) {
       processorRef.current.disconnect();
@@ -201,7 +211,6 @@ export default function RealtimeChat() {
     setIsListening(false);
   }, []);
 
-  // Handle messages from the server
   const handleServerMessage = useCallback((event: Record<string, unknown>) => {
     const eventType = event.type as string;
 
@@ -218,15 +227,12 @@ export default function RealtimeChat() {
         console.log('User started speaking');
         setIsListening(true);
         
-        // BARGE-IN: Stop AI audio and cancel response when user starts speaking
-        // Only cancel if AI is actually speaking or generating
         if (isSpeaking || isThinking || isSearching) {
           console.log('Barge-in detected - stopping AI');
           stopAllAudio();
           cancelResponse();
         }
         
-        // Clear sources and search status for new conversation turn
         setSources([]);
         setSearchStatus(null);
         setIsSearching(false);
@@ -235,38 +241,32 @@ export default function RealtimeChat() {
 
       case 'input_audio_buffer.speech_stopped':
         console.log('User stopped speaking');
-        // User finished speaking - AI will start thinking
         setIsThinking(true);
         setIsListening(false);
         break;
 
       case 'input_audio_buffer.committed':
-        // Audio was committed for processing - definitely thinking now
         console.log('Audio committed - AI processing');
         setIsThinking(true);
         break;
 
       case 'conversation.item.created':
-        // A conversation item was created (user's audio transcription started)
         console.log('Conversation item created');
         setIsThinking(true);
         break;
 
       case 'response.created':
-        // Response is being generated - might be searching
         console.log('Response created - generating');
         setIsSearching(true);
         setIsThinking(true);
         break;
 
       case 'response.output_item.added':
-        // Output item added - still processing
         console.log('Output item added');
         setIsThinking(true);
         break;
 
       case 'search.completed':
-        // Search completed - show status
         setIsSearching(false);
         setSearchStatus({
           query: event.query as string,
@@ -277,7 +277,6 @@ export default function RealtimeChat() {
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
-        // User's speech was transcribed
         const userText = event.transcript as string;
         if (userText) {
           setTranscript((prev) => [
@@ -292,13 +291,7 @@ export default function RealtimeChat() {
         }
         break;
 
-      case 'response.audio_transcript.delta':
-        // Assistant is speaking - update transcript
-        // This comes in chunks, we'd need to accumulate
-        break;
-
       case 'response.audio_transcript.done':
-        // Assistant finished a transcript segment
         const assistantText = event.transcript as string;
         if (assistantText) {
           setTranscript((prev) => [
@@ -314,10 +307,9 @@ export default function RealtimeChat() {
         break;
 
       case 'response.audio.delta':
-        // Audio chunk from assistant - play it
         playAudioChunk(event.delta as string);
         setIsSpeaking(true);
-        setIsThinking(false); // No longer thinking once audio starts
+        setIsThinking(false);
         break;
 
       case 'response.audio.done':
@@ -333,7 +325,6 @@ export default function RealtimeChat() {
         break;
 
       case 'response.cancelled':
-        // Response was cancelled (e.g., due to barge-in)
         console.log('Response cancelled');
         setIsSpeaking(false);
         setIsSearching(false);
@@ -341,7 +332,6 @@ export default function RealtimeChat() {
         break;
 
       case 'grounding.sources':
-        // Received grounding/citation info from server
         const groundingSources = event.sources as GroundingSource[];
         if (groundingSources && groundingSources.length > 0) {
           setSources((prev) => [...prev, ...groundingSources]);
@@ -351,40 +341,34 @@ export default function RealtimeChat() {
       case 'error':
         console.error('Server error:', event);
         const errorMessage = (event.error as { message?: string })?.message || 'Unknown error';
-        // Don't show "no active response" error - it's expected when cancelling with nothing to cancel
         if (!errorMessage.includes('no active response')) {
           setError(errorMessage);
         }
         break;
 
       default:
-        // Log unhandled events for debugging
         if (!eventType.includes('delta')) {
           console.log('Unhandled event:', eventType, event);
         }
     }
   }, [stopAllAudio, cancelResponse, isSpeaking, isThinking, isSearching]);
 
-  // Play audio chunk received from the server
   const playAudioChunk = useCallback((base64Audio: string) => {
     if (!audioContextRef.current) return;
 
     try {
-      // Decode base64 to binary
       const binaryString = atob(base64Audio);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // Convert to Int16 then Float32
       const int16Data = new Int16Array(bytes.buffer);
       const float32Data = new Float32Array(int16Data.length);
       for (let i = 0; i < int16Data.length; i++) {
         float32Data[i] = int16Data[i] / 32768;
       }
 
-      // Create audio buffer and play
       const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, 24000);
       audioBuffer.getChannelData(0).set(float32Data);
 
@@ -392,10 +376,8 @@ export default function RealtimeChat() {
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
 
-      // Track this source for potential interruption
       activeAudioSourcesRef.current.push(source);
       
-      // Remove from tracking when done
       source.onended = () => {
         const index = activeAudioSourcesRef.current.indexOf(source);
         if (index > -1) {
@@ -403,7 +385,6 @@ export default function RealtimeChat() {
         }
       };
 
-      // Schedule playback
       const startTime = Math.max(playbackTimeRef.current, audioContextRef.current.currentTime);
       source.start(startTime);
       playbackTimeRef.current = startTime + audioBuffer.duration;
@@ -412,177 +393,257 @@ export default function RealtimeChat() {
     }
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       disconnect();
     };
   }, [disconnect]);
 
+  // Status text based on activity
+  const getStatusText = () => {
+    if (status === 'connecting') return 'Connecting...';
+    if (status === 'error') return 'Connection error';
+    if (status === 'disconnected') return 'Disconnected';
+    if (isListening) return 'Listening...';
+    if (isSearching) return 'Searching knowledge base...';
+    if (isThinking) return 'Thinking...';
+    if (isSpeaking) return 'Speaking...';
+    return 'Ready to listen';
+  };
+
   return (
-    <div className="flex flex-col h-screen max-w-4xl mx-auto p-4">
-      <Card className="flex-1 flex flex-col">
-        {/* Header */}
-        <div className="p-4 border-b">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold">Dr Leeron</h1>
-              <p className="text-sm text-muted-foreground">Realtime Voice Chat</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant={status === 'connected' ? 'default' : 'outline'}
-                onClick={status === 'connected' ? disconnect : connect}
-                disabled={status === 'connecting'}
-              >
-                {status === 'connected' ? (
-                  <>
-                    <PhoneOff className="h-4 w-4 mr-2" />
-                    End Call
-                  </>
-                ) : status === 'connecting' ? (
-                  'Connecting...'
-                ) : (
-                  <>
-                    <Phone className="h-4 w-4 mr-2" />
-                    Start Call
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
+    <div className="relative min-h-screen w-full overflow-hidden">
+      {/* Pine green gradient background with radial lighter center */}
+      <div 
+        className="absolute inset-0"
+        style={{
+          background: `
+            radial-gradient(
+              ellipse at 50% 50%,
+              rgba(45, 90, 70, 1) 0%,
+              rgba(30, 70, 55, 1) 35%,
+              rgba(20, 55, 45, 1) 60%,
+              rgba(15, 45, 35, 1) 80%,
+              rgba(10, 35, 28, 1) 100%
+            )
+          `,
+        }}
+      />
+
+      {/* Content */}
+      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4">
+        
+        {/* Title */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-light text-white/90 tracking-wide">Dr Leeron</h1>
+          <p className="text-white/50 text-sm mt-2">RANZCP MEQ Tutor</p>
         </div>
 
-        {/* Status indicators */}
-        <div className="px-4 py-2 border-b bg-muted/50">
-          <div className="flex items-center gap-4 text-sm">
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  status === 'connected'
-                    ? 'bg-green-500'
-                    : status === 'connecting'
-                    ? 'bg-yellow-500 animate-pulse'
-                    : status === 'error'
-                    ? 'bg-red-500'
-                    : 'bg-gray-400'
-                }`}
-              />
-              <span className="capitalize">{status}</span>
-            </div>
+        {/* Central Orb */}
+        <div className="relative mb-8">
+          {/* Outer glow rings */}
+          <div 
+            className={`absolute inset-0 rounded-full transition-all duration-1000 ${
+              activityState === 'listening' ? 'animate-ping' : ''
+            }`}
+            style={{
+              width: '200px',
+              height: '200px',
+              background: activityState === 'listening' 
+                ? 'rgba(134, 239, 172, 0.2)' 
+                : activityState === 'speaking'
+                ? 'rgba(147, 197, 253, 0.2)'
+                : activityState === 'thinking' || activityState === 'searching'
+                ? 'rgba(251, 191, 36, 0.15)'
+                : 'rgba(255, 255, 255, 0.05)',
+              filter: 'blur(40px)',
+              transform: 'translate(-50%, -50%)',
+              left: '50%',
+              top: '50%',
+            }}
+          />
 
-            {status === 'connected' && (
-              <>
-                <div className="flex items-center gap-2">
-                  {isListening ? (
-                    <Mic className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <MicOff className="h-4 w-4 text-gray-400" />
-                  )}
-                  <span>{isListening ? 'Listening' : 'Not listening'}</span>
+          {/* Main orb */}
+          <div 
+            className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 ${
+              activityState === 'speaking' ? 'scale-110' : 
+              activityState === 'listening' ? 'scale-105' : 
+              'scale-100'
+            }`}
+            style={{
+              background: `
+                radial-gradient(
+                  circle at 30% 30%,
+                  rgba(134, 239, 172, 0.3) 0%,
+                  rgba(74, 222, 128, 0.15) 30%,
+                  rgba(34, 197, 94, 0.1) 60%,
+                  rgba(22, 163, 74, 0.05) 100%
+                )
+              `,
+              boxShadow: activityState === 'listening'
+                ? '0 0 60px rgba(134, 239, 172, 0.4), inset 0 0 60px rgba(134, 239, 172, 0.1)'
+                : activityState === 'speaking'
+                ? '0 0 60px rgba(147, 197, 253, 0.4), inset 0 0 60px rgba(147, 197, 253, 0.1)'
+                : activityState === 'thinking' || activityState === 'searching'
+                ? '0 0 40px rgba(251, 191, 36, 0.3), inset 0 0 40px rgba(251, 191, 36, 0.05)'
+                : '0 0 40px rgba(255, 255, 255, 0.1), inset 0 0 40px rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+            }}
+          >
+            {/* Inner icon */}
+            <div className={`transition-all duration-300 ${
+              activityState === 'thinking' || activityState === 'searching' ? 'animate-pulse' : ''
+            }`}>
+              {activityState === 'listening' ? (
+                <Mic className="w-12 h-12 text-green-300/80" />
+              ) : activityState === 'speaking' ? (
+                <div className="flex items-center gap-1">
+                  {[...Array(4)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="w-1.5 bg-blue-300/80 rounded-full animate-pulse"
+                      style={{
+                        height: `${20 + Math.random() * 20}px`,
+                        animationDelay: `${i * 0.15}s`,
+                        animationDuration: '0.5s',
+                      }}
+                    />
+                  ))}
                 </div>
-
-                {isSpeaking && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-blue-500">🔊 Speaking...</span>
-                  </div>
-                )}
-
-                {isThinking && !isSpeaking && !isSearching && !isListening && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-purple-500 animate-pulse">🧠 Thinking...</span>
-                  </div>
-                )}
-
-                {isSearching && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-yellow-500 animate-pulse">🔍 Searching knowledge base...</span>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Search status */}
-          {searchStatus && (
-            <div className="mt-2 text-xs text-muted-foreground">
-              Found {searchStatus.resultCount} results for "{searchStatus.query}"
-            </div>
-          )}
-        </div>
-
-        {/* Transcript */}
-        <div className="flex-1 overflow-y-auto p-4">
-          {transcript.length === 0 ? (
-            <div className="text-center text-muted-foreground py-12">
-              {status === 'connected' ? (
-                <p>Start speaking to begin the conversation...</p>
+              ) : activityState === 'thinking' || activityState === 'searching' ? (
+                <div className="w-10 h-10 border-2 border-amber-300/50 border-t-amber-300 rounded-full animate-spin" />
               ) : (
-                <p>Click "Start Call" to begin a voice conversation with Dr. Leeron</p>
+                <Mic className="w-12 h-12 text-white/30" />
               )}
             </div>
-          ) : (
-            <div className="space-y-4">
-              {transcript.map((entry) => (
-                <div
-                  key={entry.id}
-                  className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`rounded-lg px-4 py-2 max-w-[80%] ${
-                      entry.role === 'user'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-muted'
-                    }`}
-                  >
-                    <p>{entry.text}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+          </div>
+
+          {/* Animated rings for speaking */}
+          {activityState === 'speaking' && (
+            <>
+              <div className="absolute inset-0 w-48 h-48 rounded-full border border-blue-300/30 animate-ping" style={{ animationDuration: '1.5s' }} />
+              <div className="absolute inset-0 w-48 h-48 rounded-full border border-blue-300/20 animate-ping" style={{ animationDuration: '2s', animationDelay: '0.5s' }} />
+            </>
           )}
         </div>
 
-        {/* Sources/Citations */}
-        {sources.length > 0 && (
-          <div className="px-4 py-3 border-t bg-muted/30">
-            <p className="text-xs font-medium text-muted-foreground mb-2">
-              📚 Sources ({sources.length}):
+        {/* Status text */}
+        <div className="text-center mb-8">
+          <p className={`text-lg font-light transition-all duration-300 ${
+            activityState === 'listening' ? 'text-green-300' :
+            activityState === 'speaking' ? 'text-blue-300' :
+            activityState === 'thinking' || activityState === 'searching' ? 'text-amber-300' :
+            'text-white/60'
+          }`}>
+            {getStatusText()}
+          </p>
+          
+          {searchStatus && (
+            <p className="text-white/40 text-sm mt-2">
+              Found {searchStatus.resultCount} results
             </p>
-            <div className="space-y-2 max-h-32 overflow-y-auto">
-              {sources.map((source, i) => (
-                <div
-                  key={source.id || i}
-                  className="text-xs bg-background px-3 py-2 rounded border"
-                >
-                  <div className="font-medium text-foreground">{source.title}</div>
-                  {source.excerpt && (
-                    <div className="text-muted-foreground mt-1 line-clamp-2">
-                      "{source.excerpt}"
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          )}
+        </div>
+
+        {/* End call button */}
+        {status === 'connected' && (
+          <button
+            onClick={disconnect}
+            className="flex items-center gap-2 px-6 py-3 rounded-full bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-300 transition-all duration-300 hover:scale-105"
+          >
+            <PhoneOff className="w-5 h-5" />
+            <span>End Session</span>
+          </button>
+        )}
+
+        {status === 'disconnected' && (
+          <button
+            onClick={connect}
+            className="flex items-center gap-2 px-6 py-3 rounded-full bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 text-green-300 transition-all duration-300 hover:scale-105"
+          >
+            <Phone className="w-5 h-5" />
+            <span>Start Session</span>
+          </button>
+        )}
+
+        {status === 'error' && (
+          <button
+            onClick={connect}
+            className="flex items-center gap-2 px-6 py-3 rounded-full bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 text-amber-300 transition-all duration-300 hover:scale-105"
+          >
+            <Phone className="w-5 h-5" />
+            <span>Retry Connection</span>
+          </button>
         )}
 
         {/* Error display */}
         {error && (
-          <div className="px-4 py-2 border-t bg-destructive/10 text-destructive">
-            <p className="text-sm">Error: {error}</p>
+          <div className="mt-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
+            <p className="text-red-300 text-sm">{error}</p>
           </div>
         )}
 
-        {/* Footer */}
-        <div className="p-4 border-t">
-          <p className="text-center text-sm text-muted-foreground">
-            {status === 'connected'
-              ? 'Speak naturally - the AI will respond when you pause. Start speaking to interrupt.'
-              : 'Connect to start a voice conversation'}
-          </p>
-        </div>
-      </Card>
+        {/* Sources panel - slides up when available */}
+        {sources.length > 0 && (
+          <div className="fixed bottom-4 left-4 right-4 max-w-lg mx-auto">
+            <div className="bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 p-4">
+              <p className="text-white/60 text-xs font-medium mb-2 flex items-center gap-2">
+                <BookOpen className="w-3 h-3" />
+                Sources ({sources.length})
+              </p>
+              <div className="space-y-2 max-h-24 overflow-y-auto">
+                {sources.map((source, i) => (
+                  <div key={source.id || i} className="text-xs">
+                    <span className="text-white/80">{source.title}</span>
+                    {source.excerpt && (
+                      <span className="text-white/40 ml-2">"{source.excerpt.slice(0, 50)}..."</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Transcript toggle */}
+        <button
+          onClick={() => setShowTranscript(!showTranscript)}
+          className="fixed top-4 right-4 p-3 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 hover:text-white/80 transition-all duration-300"
+        >
+          <BookOpen className="w-5 h-5" />
+        </button>
+
+        {/* Transcript panel */}
+        {showTranscript && (
+          <div className="fixed top-16 right-4 w-80 max-h-96 bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 p-4 overflow-hidden">
+            <p className="text-white/60 text-xs font-medium mb-3">Transcript</p>
+            <div className="space-y-3 max-h-80 overflow-y-auto">
+              {transcript.length === 0 ? (
+                <p className="text-white/30 text-sm">No conversation yet...</p>
+              ) : (
+                transcript.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`text-sm ${
+                      entry.role === 'user' ? 'text-green-300/80' : 'text-white/70'
+                    }`}
+                  >
+                    <span className="text-white/40 text-xs">
+                      {entry.role === 'user' ? 'You' : 'Dr Leeron'}:
+                    </span>
+                    <p className="mt-0.5">{entry.text}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tip at bottom */}
+        <p className="fixed bottom-4 text-white/30 text-xs">
+          {status === 'connected' ? 'Speak naturally • Interrupt anytime' : ''}
+        </p>
+      </div>
     </div>
   );
 }
