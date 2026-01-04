@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Mic, Send, Volume2, Database, X } from 'lucide-react';
+import { Mic, Send, Volume2, Database, X, Phone, PhoneOff, Radio } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -39,6 +39,8 @@ export default function Chat() {
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceChatMode, setVoiceChatMode] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [vectorStores, setVectorStores] = useState<VectorStore[]>([]);
   const [selectedVectorStore, setSelectedVectorStore] = useState<string | null>(null);
   const [loadingVectorStores, setLoadingVectorStores] = useState(true);
@@ -46,6 +48,15 @@ export default function Chat() {
   const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const voiceChatModeRef = useRef(false);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Keep ref in sync with state for use in callbacks
+  useEffect(() => {
+    voiceChatModeRef.current = voiceChatMode;
+  }, [voiceChatMode]);
 
   // Load vector stores on mount
   useEffect(() => {
@@ -72,10 +83,11 @@ export default function Chat() {
     }
   }, [messages]);
 
-  // Start recording
+  // Start recording with optional silence detection for voice chat mode
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -86,16 +98,88 @@ export default function Chat() {
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        // Clean up stream
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(track => track.stop());
+          streamRef.current = null;
+        }
+        // Clean up silence detection
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current);
+          silenceTimeoutRef.current = null;
+        }
+        analyserRef.current = null;
+        
         await transcribeAudio(audioBlob);
-        stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorder.start();
       setIsRecording(true);
+
+      // Set up silence detection if in voice chat mode
+      if (voiceChatModeRef.current) {
+        setupSilenceDetection(stream);
+      }
     } catch (error) {
       console.error('Error accessing microphone:', error);
       alert('Could not access microphone. Please check permissions.');
     }
+  };
+
+  // Set up silence detection using Web Audio API
+  const setupSilenceDetection = (stream: MediaStream) => {
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.1;
+    source.connect(analyser);
+    analyserRef.current = analyser;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const SILENCE_THRESHOLD = 15; // Adjust sensitivity (0-255)
+    const SILENCE_DURATION = 1500; // ms of silence before stopping
+    let silenceStart: number | null = null;
+    let hasDetectedSpeech = false;
+
+    const checkAudioLevel = () => {
+      if (!analyserRef.current || !mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
+        audioContext.close();
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+
+      if (average > SILENCE_THRESHOLD) {
+        // Sound detected
+        hasDetectedSpeech = true;
+        silenceStart = null;
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current);
+          silenceTimeoutRef.current = null;
+        }
+      } else if (hasDetectedSpeech) {
+        // Silence detected after speech
+        if (!silenceStart) {
+          silenceStart = Date.now();
+        } else if (Date.now() - silenceStart > SILENCE_DURATION) {
+          // Enough silence, stop recording
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+            audioContext.close();
+            return;
+          }
+        }
+      }
+
+      requestAnimationFrame(checkAudioLevel);
+    };
+
+    checkAudioLevel();
   };
 
   // Stop recording
@@ -104,13 +188,18 @@ export default function Chat() {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
   };
 
   // Transcribe audio to text
-  const transcribeAudio = async (audioBlob: Blob) => {
+  const transcribeAudio = async (audioBlob: Blob): Promise<string | null> => {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.webm');
 
+    setIsTranscribing(true);
     try {
       const response = await fetch('/api/transcribe', {
         method: 'POST',
@@ -118,16 +207,27 @@ export default function Chat() {
       });
 
       const data = await response.json();
+      setIsTranscribing(false);
+      
       if (data.text) {
-        setInput(data.text);
+        // In voice chat mode, auto-send the message
+        if (voiceChatModeRef.current) {
+          await sendMessage(data.text, true);
+        } else {
+          setInput(data.text);
+        }
+        return data.text;
       }
+      return null;
     } catch (error) {
       console.error('Error transcribing audio:', error);
+      setIsTranscribing(false);
+      return null;
     }
   };
 
   // Speak the AI's response with streaming audio
-  const speakText = async (text: string) => {
+  const speakText = async (text: string, autoListenAfter: boolean = false) => {
     // Initialize or resume AudioContext on user gesture
     if (!audioContextRef.current) {
       audioContextRef.current = new AudioContext({ sampleRate: 24000 }); // OpenAI TTS uses 24kHz
@@ -203,6 +303,15 @@ export default function Chat() {
       }
       
       setIsSpeaking(false);
+
+      // Auto-start listening if in voice chat mode
+      if (autoListenAfter && voiceChatModeRef.current) {
+        setTimeout(() => {
+          if (voiceChatModeRef.current) {
+            startRecording();
+          }
+        }, 300); // Small delay before listening again
+      }
     } catch (error) {
       console.error('Error playing audio:', error);
       setIsSpeaking(false);
@@ -210,7 +319,7 @@ export default function Chat() {
   };
 
   // Send message and handle TRUE streaming from API route
-  const sendMessage = async (userMessage: string) => {
+  const sendMessage = async (userMessage: string, autoSpeak: boolean = false) => {
     if (!userMessage.trim()) return;
 
     setIsLoading(true);
@@ -287,6 +396,11 @@ export default function Chat() {
           }
         }
       }
+
+      // Auto-speak the response if in voice chat mode
+      if (autoSpeak && accumulatedText) {
+        await speakText(accumulatedText, true);
+      }
     } catch (err) {
       console.error('Error sending message:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -306,6 +420,28 @@ export default function Chat() {
     }
   };
 
+  // Toggle voice chat mode
+  const toggleVoiceChat = async () => {
+    if (voiceChatMode) {
+      // Turning off - stop any recording
+      setVoiceChatMode(false);
+      if (isRecording) {
+        stopRecording();
+      }
+    } else {
+      // Turning on - initialize audio context and start listening
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+      setVoiceChatMode(true);
+      // Start recording immediately
+      startRecording();
+    }
+  };
+
   // Handle input change
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInput(e.target.value);
@@ -317,14 +453,34 @@ export default function Chat() {
           <div className="p-4 border-b space-y-3">
             <div className="flex items-center justify-between">
               <h1 className="text-2xl font-bold">Dr Leeron</h1>
-              <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => window.location.href = '/vector-store'}
-              >
-                <Database className="h-4 w-4 mr-2" />
-                Manage Knowledge Base
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                    variant={voiceChatMode ? "default" : "outline"}
+                    size="sm"
+                    onClick={toggleVoiceChat}
+                    disabled={isLoading}
+                >
+                  {voiceChatMode ? (
+                      <>
+                        <PhoneOff className="h-4 w-4 mr-2" />
+                        End Voice Chat
+                      </>
+                  ) : (
+                      <>
+                        <Phone className="h-4 w-4 mr-2" />
+                        Voice Chat
+                      </>
+                  )}
+                </Button>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.location.href = '/vector-store'}
+                >
+                  <Database className="h-4 w-4 mr-2" />
+                  Manage Knowledge Base
+                </Button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -486,7 +642,25 @@ export default function Chat() {
 
             {isRecording && (
                 <p className="text-sm text-muted-foreground mt-2 text-center">
-                  Recording... Click mic again to stop
+                  {voiceChatMode ? '🎙️ Listening... (will auto-send when you stop speaking)' : 'Recording... Click mic again to stop'}
+                </p>
+            )}
+
+            {voiceChatMode && !isRecording && !isSpeaking && !isLoading && !isTranscribing && (
+                <p className="text-sm text-muted-foreground mt-2 text-center">
+                  Voice chat ready
+                </p>
+            )}
+
+            {isTranscribing && (
+                <p className="text-sm text-muted-foreground mt-2 text-center">
+                  Transcribing...
+                </p>
+            )}
+
+            {isSpeaking && (
+                <p className="text-sm text-muted-foreground mt-2 text-center">
+                  🔊 Speaking...
                 </p>
             )}
           </div>
