@@ -174,16 +174,19 @@ export default function RealtimeChat() {
     setIsListening(true);
   }, []);
 
+  // Stop all currently playing audio (for interruption/barge-in)
   const stopAllAudio = useCallback(() => {
+    // Stop all active audio sources
     activeAudioSourcesRef.current.forEach((source) => {
       try {
         source.stop();
       } catch {
-        // Ignore
+        // Ignore errors if already stopped
       }
     });
     activeAudioSourcesRef.current = [];
     
+    // Reset playback time to now
     if (audioContextRef.current) {
       playbackTimeRef.current = audioContextRef.current.currentTime;
     }
@@ -191,12 +194,14 @@ export default function RealtimeChat() {
     setIsSpeaking(false);
   }, []);
 
+  // Send cancel response to server (to stop AI from generating more)
   const cancelResponse = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'response.cancel' }));
     }
   }, []);
 
+  // Stop capturing audio
   const stopAudioCapture = useCallback(() => {
     if (processorRef.current) {
       processorRef.current.disconnect();
@@ -211,6 +216,51 @@ export default function RealtimeChat() {
     setIsListening(false);
   }, []);
 
+  // Play audio chunk received from the server
+  const playAudioChunk = useCallback((base64Audio: string) => {
+    if (!audioContextRef.current) return;
+
+    try {
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const int16Data = new Int16Array(bytes.buffer);
+      const float32Data = new Float32Array(int16Data.length);
+      for (let i = 0; i < int16Data.length; i++) {
+        float32Data[i] = int16Data[i] / 32768;
+      }
+
+      const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, 24000);
+      audioBuffer.getChannelData(0).set(float32Data);
+
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContextRef.current.destination);
+
+      // Track this source for potential interruption
+      activeAudioSourcesRef.current.push(source);
+      
+      // Remove from tracking when done
+      source.onended = () => {
+        const index = activeAudioSourcesRef.current.indexOf(source);
+        if (index > -1) {
+          activeAudioSourcesRef.current.splice(index, 1);
+        }
+      };
+
+      // Schedule playback
+      const startTime = Math.max(playbackTimeRef.current, audioContextRef.current.currentTime);
+      source.start(startTime);
+      playbackTimeRef.current = startTime + audioBuffer.duration;
+    } catch (err) {
+      console.error('Error playing audio:', err);
+    }
+  }, []);
+
+  // Handle messages from the server
   const handleServerMessage = useCallback((event: Record<string, unknown>) => {
     const eventType = event.type as string;
 
@@ -227,12 +277,11 @@ export default function RealtimeChat() {
         console.log('User started speaking');
         setIsListening(true);
         
-        if (isSpeaking || isThinking || isSearching) {
-          console.log('Barge-in detected - stopping AI');
-          stopAllAudio();
-          cancelResponse();
-        }
+        // BARGE-IN: Stop AI audio and cancel response when user starts speaking
+        stopAllAudio();
+        cancelResponse();
         
+        // Clear sources and search status for new conversation turn
         setSources([]);
         setSearchStatus(null);
         setIsSearching(false);
@@ -241,28 +290,18 @@ export default function RealtimeChat() {
 
       case 'input_audio_buffer.speech_stopped':
         console.log('User stopped speaking');
+        // User finished speaking - AI will start thinking
         setIsThinking(true);
-        setIsListening(false);
         break;
 
       case 'input_audio_buffer.committed':
-        console.log('Audio committed - AI processing');
-        setIsThinking(true);
-        break;
-
-      case 'conversation.item.created':
-        console.log('Conversation item created');
+        // Audio was committed for processing
         setIsThinking(true);
         break;
 
       case 'response.created':
-        console.log('Response created - generating');
+        // Response is being generated - might be searching
         setIsSearching(true);
-        setIsThinking(true);
-        break;
-
-      case 'response.output_item.added':
-        console.log('Output item added');
         setIsThinking(true);
         break;
 
@@ -307,9 +346,10 @@ export default function RealtimeChat() {
         break;
 
       case 'response.audio.delta':
+        // Audio chunk from assistant - play it
         playAudioChunk(event.delta as string);
         setIsSpeaking(true);
-        setIsThinking(false);
+        setIsThinking(false); // No longer thinking once audio starts
         break;
 
       case 'response.audio.done':
@@ -325,6 +365,7 @@ export default function RealtimeChat() {
         break;
 
       case 'response.cancelled':
+        // Response was cancelled (e.g., due to barge-in)
         console.log('Response cancelled');
         setIsSpeaking(false);
         setIsSearching(false);
@@ -351,47 +392,7 @@ export default function RealtimeChat() {
           console.log('Unhandled event:', eventType, event);
         }
     }
-  }, [stopAllAudio, cancelResponse, isSpeaking, isThinking, isSearching]);
-
-  const playAudioChunk = useCallback((base64Audio: string) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      const int16Data = new Int16Array(bytes.buffer);
-      const float32Data = new Float32Array(int16Data.length);
-      for (let i = 0; i < int16Data.length; i++) {
-        float32Data[i] = int16Data[i] / 32768;
-      }
-
-      const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, 24000);
-      audioBuffer.getChannelData(0).set(float32Data);
-
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-
-      activeAudioSourcesRef.current.push(source);
-      
-      source.onended = () => {
-        const index = activeAudioSourcesRef.current.indexOf(source);
-        if (index > -1) {
-          activeAudioSourcesRef.current.splice(index, 1);
-        }
-      };
-
-      const startTime = Math.max(playbackTimeRef.current, audioContextRef.current.currentTime);
-      source.start(startTime);
-      playbackTimeRef.current = startTime + audioBuffer.duration;
-    } catch (err) {
-      console.error('Error playing audio:', err);
-    }
-  }, []);
+  }, [stopAllAudio, cancelResponse, playAudioChunk]);
 
   useEffect(() => {
     return () => {
