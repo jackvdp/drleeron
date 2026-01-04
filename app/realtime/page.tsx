@@ -15,8 +15,15 @@ interface TranscriptEntry {
 }
 
 interface GroundingSource {
+  id?: string;
   title: string;
   excerpt?: string;
+}
+
+interface SearchStatus {
+  query: string;
+  resultCount: number;
+  timestamp: Date;
 }
 
 export default function RealtimeChat() {
@@ -25,6 +32,8 @@ export default function RealtimeChat() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [sources, setSources] = useState<GroundingSource[]>([]);
+  const [searchStatus, setSearchStatus] = useState<SearchStatus | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -179,12 +188,30 @@ export default function RealtimeChat() {
       case 'input_audio_buffer.speech_started':
         console.log('User started speaking');
         setIsListening(true);
-        // Clear sources for new conversation turn
+        // Clear sources and search status for new conversation turn
         setSources([]);
+        setSearchStatus(null);
+        setIsSearching(false);
         break;
 
       case 'input_audio_buffer.speech_stopped':
         console.log('User stopped speaking');
+        break;
+
+      case 'response.created':
+        // Response is being generated - might be searching
+        setIsSearching(true);
+        break;
+
+      case 'search.completed':
+        // Search completed - show status
+        setIsSearching(false);
+        setSearchStatus({
+          query: event.query as string,
+          resultCount: event.resultCount as number,
+          timestamp: new Date(),
+        });
+        console.log(`Search completed: ${event.resultCount} results for "${event.query}"`);
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
@@ -232,10 +259,12 @@ export default function RealtimeChat() {
 
       case 'response.audio.done':
         setIsSpeaking(false);
+        setIsSearching(false);
         break;
 
       case 'response.done':
         setIsSpeaking(false);
+        setIsSearching(false);
         break;
 
       case 'grounding.sources':
@@ -370,9 +399,22 @@ export default function RealtimeChat() {
                     <span className="text-blue-500">🔊 Speaking...</span>
                   </div>
                 )}
+
+                {isSearching && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-yellow-500 animate-pulse">🔍 Searching knowledge base...</span>
+                  </div>
+                )}
               </>
             )}
           </div>
+
+          {/* Search status */}
+          {searchStatus && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Found {searchStatus.resultCount} results for "{searchStatus.query}"
+            </div>
+          )}
         </div>
 
         {/* Transcript */}
@@ -409,16 +451,23 @@ export default function RealtimeChat() {
 
         {/* Sources/Citations */}
         {sources.length > 0 && (
-          <div className="px-4 py-2 border-t bg-muted/30">
-            <p className="text-xs font-medium text-muted-foreground mb-1">Sources:</p>
-            <div className="flex flex-wrap gap-2">
+          <div className="px-4 py-3 border-t bg-muted/30">
+            <p className="text-xs font-medium text-muted-foreground mb-2">
+              📚 Sources ({sources.length}):
+            </p>
+            <div className="space-y-2 max-h-32 overflow-y-auto">
               {sources.map((source, i) => (
-                <span
-                  key={i}
-                  className="text-xs bg-background px-2 py-1 rounded border"
+                <div
+                  key={source.id || i}
+                  className="text-xs bg-background px-3 py-2 rounded border"
                 >
-                  {source.title}
-                </span>
+                  <div className="font-medium text-foreground">{source.title}</div>
+                  {source.excerpt && (
+                    <div className="text-muted-foreground mt-1 line-clamp-2">
+                      "{source.excerpt}"
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </div>

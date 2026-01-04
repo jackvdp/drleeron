@@ -224,13 +224,21 @@ function getTools(): object[] {
     {
       type: 'function',
       name: 'search',
-      description: 'Search the knowledge base for information about medical topics, exam materials, scoring criteria, or any relevant content to answer the student\'s question.',
+      description: `Search the RANZCP MEQ knowledge base for relevant information. The knowledge base contains:
+- Official RANZCP MEQ questions (past exam questions)
+- Scoring keys and marking guides
+- MEQ master list
+- Lillian Zou's MEQ notes
+- 2025 syllabus
+- Workshop materials (2018/2021/2023)
+
+Use this tool to find exam questions, scoring criteria, model answers, and study materials.`,
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The search query to find relevant information in the knowledge base',
+            description: 'The search query - be specific about what you\'re looking for (e.g., "depression MEQ scoring criteria", "psychosis assessment questions", "marking rubric for list vs outline")',
           },
         },
         required: ['query'],
@@ -239,7 +247,7 @@ function getTools(): object[] {
     {
       type: 'function',
       name: 'report_grounding',
-      description: 'Report which sources from the knowledge base were used to ground the response. Call this after using information from the search results.',
+      description: 'After providing information from the knowledge base, call this tool to cite your sources. This helps the student know which documents to review.',
       parameters: {
         type: 'object',
         properties: {
@@ -250,11 +258,11 @@ function getTools(): object[] {
               properties: {
                 title: {
                   type: 'string',
-                  description: 'The title or name of the source document',
+                  description: 'The filename or title of the source document (e.g., "MEQ-master-list copy", "2023 Scoring Keys")',
                 },
                 excerpt: {
                   type: 'string',
-                  description: 'A brief excerpt from the source that was used',
+                  description: 'A brief excerpt or key point from this source that was used in your response',
                 },
               },
               required: ['title'],
@@ -268,35 +276,48 @@ function getTools(): object[] {
   ];
 }
 
+// Search result interface
+interface SearchResult {
+  filename: string;
+  content: string;
+  score?: number;
+}
+
 // Handle function calls from the Realtime API
 async function handleFunctionCall(event: RealtimeEvent, openaiWs: WebSocket, clientWs: WebSocket): Promise<void> {
   const callId = event.call_id as string;
   const name = event.name as string;
   const args = JSON.parse(event.arguments as string);
 
-  console.log(`Function call: ${name}`, args);
+  console.log(`\n📞 Function call: ${name}`);
+  console.log('   Arguments:', JSON.stringify(args, null, 2));
 
   let result: unknown;
 
   try {
     if (name === 'search') {
-      result = await performSearch(args.query);
-    } else if (name === 'report_grounding') {
-      result = { success: true, sources: args.sources };
-      // Send grounding info to client for citation display
+      const searchResults = await performSearch(args.query);
+      result = searchResults;
+      
+      // Also send search status to client for UI feedback
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify({
-          type: 'grounding.sources',
-          sources: args.sources,
+          type: 'search.completed',
+          query: args.query,
+          resultCount: (searchResults as { results: SearchResult[] }).results?.length || 0,
         }));
       }
+    } else if (name === 'report_grounding') {
+      result = handleReportGrounding(args.sources, clientWs);
     } else {
       result = { error: `Unknown function: ${name}` };
     }
   } catch (err) {
-    console.error(`Error executing function ${name}:`, err);
-    result = { error: `Failed to execute ${name}` };
+    console.error(`❌ Error executing function ${name}:`, err);
+    result = { error: `Failed to execute ${name}`, message: err instanceof Error ? err.message : 'Unknown error' };
   }
+
+  console.log(`   Result preview:`, JSON.stringify(result, null, 2).slice(0, 500));
 
   // Send function result back to OpenAI
   const functionOutput: RealtimeEvent = {
@@ -317,61 +338,126 @@ async function handleFunctionCall(event: RealtimeEvent, openaiWs: WebSocket, cli
   openaiWs.send(JSON.stringify(responseCreate));
 }
 
+// Handle the report_grounding tool - extract and send citation info to client
+function handleReportGrounding(sources: Array<{ title: string; excerpt?: string }>, clientWs: WebSocket): object {
+  console.log(`\n📚 Report grounding called with ${sources?.length || 0} sources`);
+  
+  if (!sources || sources.length === 0) {
+    return { success: true, message: 'No sources to report' };
+  }
+
+  // Format sources for the client
+  const formattedSources = sources.map((source, index) => ({
+    id: `source-${Date.now()}-${index}`,
+    title: source.title || 'Unknown Document',
+    excerpt: source.excerpt || '',
+  }));
+
+  // Send grounding info to client for citation display
+  if (clientWs.readyState === WebSocket.OPEN) {
+    clientWs.send(JSON.stringify({
+      type: 'grounding.sources',
+      sources: formattedSources,
+    }));
+    console.log('   ✅ Sent sources to client');
+  }
+
+  return { 
+    success: true, 
+    sourcesReported: formattedSources.length,
+    sources: formattedSources,
+  };
+}
+
 // Search the vector store using Responses API with file_search
 async function performSearch(query: string): Promise<object> {
-  console.log('Searching for:', query);
+  console.log(`\n🔍 Searching vector store for: "${query}"`);
 
   if (!VECTOR_STORE_ID) {
-    console.warn('No VECTOR_STORE_ID configured');
+    console.warn('   ⚠️ No VECTOR_STORE_ID configured');
     return {
       results: [],
-      message: 'No knowledge base configured',
+      message: 'No knowledge base configured. Please set VECTOR_STORE_ID in .env.local',
     };
   }
 
   try {
+    const startTime = Date.now();
+    
     // Use the Responses API with file_search to query the vector store
+    // This leverages OpenAI's built-in retrieval which handles chunking and relevance
     const response = await openai.responses.create({
-      model: 'gpt-4o-mini', // Use smaller model for search extraction
-      input: `Search query: "${query}"\n\nFind and return the most relevant passages from the knowledge base that relate to this query. Return the key information in a structured format.`,
+      model: 'gpt-4o-mini',
+      input: query,
+      instructions: `You are a search assistant. Search the knowledge base for information relevant to the query and return the most relevant passages. 
+      
+For each piece of information you find, clearly indicate:
+1. The source document filename
+2. The relevant content/passage
+
+Format your response as a clear summary of what was found, organized by source document.
+If no relevant information is found, say so clearly.`,
       tools: [
         {
           type: 'file_search',
           vector_store_ids: [VECTOR_STORE_ID],
+          max_num_results: 10, // Get top 10 most relevant chunks
         },
       ],
+      tool_choice: 'required', // Force it to use file_search
     });
 
-    // Extract the search results from the response
-    const results: { title: string; content: string }[] = [];
+    const searchTime = Date.now() - startTime;
+    console.log(`   ⏱️ Search completed in ${searchTime}ms`);
+
+    // Extract the search results
+    const results: SearchResult[] = [];
+    const seenContent = new Set<string>(); // Avoid duplicates
     
-    // The response output contains the file search results
     if (response.output) {
       for (const item of response.output) {
+        // Handle file search tool calls to get raw results
+        if (item.type === 'file_search_call' && item.results) {
+          for (const searchResult of item.results) {
+            const content = searchResult.text || '';
+            const filename = searchResult.filename || 'Unknown Document';
+            
+            // Skip duplicates
+            const contentKey = content.slice(0, 100);
+            if (seenContent.has(contentKey)) continue;
+            seenContent.add(contentKey);
+            
+            results.push({
+              filename,
+              content,
+              score: searchResult.score,
+            });
+          }
+        }
+        
+        // Also extract from message content with annotations
         if (item.type === 'message' && item.content) {
           for (const content of item.content) {
-            if (content.type === 'output_text') {
-              // Extract text content
-              results.push({
-                title: 'Knowledge Base',
-                content: content.text || '',
-              });
-              
-              // Handle annotations which contain file citations
-              if (content.annotations) {
-                for (const annotation of content.annotations) {
-                  if (annotation.type === 'file_citation') {
-                    const fileCitation = annotation as { 
-                      type: 'file_citation'; 
-                      filename?: string; 
-                      quote?: string;
-                    };
-                    if (fileCitation.quote) {
-                      results.push({
-                        title: fileCitation.filename || 'Document',
-                        content: fileCitation.quote,
-                      });
-                    }
+            if (content.type === 'output_text' && content.annotations) {
+              for (const annotation of content.annotations) {
+                if (annotation.type === 'file_citation') {
+                  const citation = annotation as {
+                    type: 'file_citation';
+                    filename?: string;
+                    file_id?: string;
+                    index?: number;
+                  };
+                  
+                  // Try to get the quoted text from the annotation
+                  const annotationAny = annotation as unknown as Record<string, unknown>;
+                  const quote = (annotationAny.quote as string) || (annotationAny.text as string) || '';
+                  
+                  if (quote && !seenContent.has(quote.slice(0, 100))) {
+                    seenContent.add(quote.slice(0, 100));
+                    results.push({
+                      filename: citation.filename || 'Document',
+                      content: quote,
+                    });
                   }
                 }
               }
@@ -381,20 +467,45 @@ async function performSearch(query: string): Promise<object> {
       }
     }
 
-    console.log(`Search returned ${results.length} results`);
+    console.log(`   📄 Found ${results.length} unique results`);
     
+    // Format results for the Realtime API
+    if (results.length === 0) {
+      return {
+        success: true,
+        query,
+        results: [],
+        message: `No relevant information found in the knowledge base for: "${query}"`,
+        suggestion: 'Try rephrasing your question or ask about a different topic.',
+      };
+    }
+
+    // Sort by score if available
+    results.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    // Format for the model to use
+    const formattedResults = results.slice(0, 8).map((r, i) => ({
+      rank: i + 1,
+      source: r.filename,
+      content: r.content.slice(0, 1500), // Limit content length
+      relevanceScore: r.score ? Math.round(r.score * 100) + '%' : 'N/A',
+    }));
+
     return {
-      results: results.length > 0 ? results : [{ 
-        title: 'No results', 
-        content: `No specific information found for: "${query}"` 
-      }],
+      success: true,
+      query,
+      resultCount: formattedResults.length,
+      results: formattedResults,
+      message: `Found ${formattedResults.length} relevant passages from the knowledge base.`,
     };
   } catch (err) {
-    console.error('Search error:', err);
+    console.error('   ❌ Search error:', err);
     return { 
+      success: false,
       error: 'Search failed', 
       results: [],
       message: err instanceof Error ? err.message : 'Unknown error',
+      suggestion: 'The knowledge base search encountered an error. Please try again.',
     };
   }
 }
