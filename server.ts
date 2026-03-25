@@ -54,9 +54,8 @@ app.prepare().then(() => {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
-    } else {
-      socket.destroy();
     }
+    // Don't destroy socket for other paths — Next.js 16 HMR needs WebSocket too
   });
 
   // Handle WebSocket connections

@@ -42,8 +42,6 @@ export default function RealtimeChat() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackTimeRef = useRef<number>(0);
   const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const hasConnectedRef = useRef(false);
-
   // Get the current activity state for the orb
   const getActivityState = () => {
     if (isListening) return 'listening';
@@ -134,11 +132,11 @@ export default function RealtimeChat() {
 
   // Auto-connect on mount
   useEffect(() => {
-    if (!hasConnectedRef.current) {
-      hasConnectedRef.current = true;
-      connect();
-    }
-  }, [connect]);
+    connect();
+    return () => {
+      disconnect();
+    };
+  }, [connect, disconnect]);
 
   // Start capturing audio from microphone
   const startAudioCapture = useCallback(() => {
@@ -395,12 +393,6 @@ export default function RealtimeChat() {
         }
     }
   }, [stopAllAudio, cancelResponse, playAudioChunk]);
-
-  useEffect(() => {
-    return () => {
-      disconnect();
-    };
-  }, [disconnect]);
 
   // Status text based on activity
   const getStatusText = () => {
