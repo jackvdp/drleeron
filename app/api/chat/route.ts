@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
     // Get the last user message
     const lastUserMessage = messages
-        .filter((m: any) => m.role === 'user')
+        .filter((m: { role: string }) => m.role === 'user')
         .pop();
 
     if (!lastUserMessage) {
@@ -29,12 +29,12 @@ export async function POST(req: NextRequest) {
     }
 
     const userInput = lastUserMessage.parts
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text)
+        .filter((p: { type: string; text?: string }) => p.type === 'text')
+        .map((p: { type: string; text?: string }) => p.text)
         .join(' ');
 
     // Build the tools array
-    const tools: any[] = [];
+    const tools: { type: 'file_search'; vector_store_ids: string[] }[] = [];
 
     if (vectorStoreId) {
       tools.push({
@@ -143,10 +143,10 @@ QUALITY BAR:
         'Transfer-Encoding': 'chunked',
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error in chat API:', error);
     return new Response(
-        JSON.stringify({ error: error.message || 'Failed to process chat' }),
+        JSON.stringify({ error: error instanceof Error ? error.message : 'Failed to process chat' }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

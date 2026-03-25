@@ -109,6 +109,7 @@ export default function RealtimeChat() {
       setError(err instanceof Error ? err.message : 'Failed to connect');
       setStatus('error');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Disconnect from the WebSocket server
@@ -128,6 +129,7 @@ export default function RealtimeChat() {
     setStatus('disconnected');
     setIsListening(false);
     setIsSpeaking(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-connect on mount
@@ -440,7 +442,7 @@ export default function RealtimeChat() {
           <p className="text-white/50 text-sm mt-2 mb-4">RANZCP MEQ Voice Tutor</p>
           <p className="text-white/40 text-sm max-w-md mx-auto leading-relaxed">
             Practice for your RANZCP MEQ exam with AI-guided Socratic questioning. 
-            Speak naturally and I'll help you work through clinical scenarios.
+            Speak naturally and I&apos;ll help you work through clinical scenarios.
           </p>
         </div>
 
@@ -601,7 +603,7 @@ export default function RealtimeChat() {
                   <div key={source.id || i} className="text-xs">
                     <span className="text-white/80">{source.title}</span>
                     {source.excerpt && (
-                      <span className="text-white/40 ml-2">"{source.excerpt.slice(0, 50)}..."</span>
+                      <span className="text-white/40 ml-2">&ldquo;{source.excerpt.slice(0, 50)}...&rdquo;</span>
                     )}
                   </div>
                 ))}

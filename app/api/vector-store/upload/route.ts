@@ -45,11 +45,11 @@ export async function POST(req: NextRequest) {
                         filename: uploadedFile.filename,
                         status: 'success',
                     };
-                } catch (error: any) {
+                } catch (error: unknown) {
                     return {
                         filename: file.name,
                         status: 'error',
-                        error: error.message,
+                        error: error instanceof Error ? error.message : 'Upload failed',
                     };
                 }
             })
@@ -65,10 +65,10 @@ export async function POST(req: NextRequest) {
             errorCount,
             results: uploadResults,
         });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error uploading files:', error);
         return NextResponse.json(
-            { error: error.message || 'Failed to upload files' },
+            { error: error instanceof Error ? error.message : 'Failed to upload files' },
             { status: 500 }
         );
     }

@@ -17,10 +17,10 @@ export async function GET(
         return NextResponse.json({
             files: files.data,
         });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error listing files:', error);
         return NextResponse.json(
-            { error: error.message || 'Failed to list files' },
+            { error: error instanceof Error ? error.message : 'Failed to list files' },
             { status: 500 }
         );
     }

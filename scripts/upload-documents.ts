@@ -53,7 +53,7 @@ async function uploadDocuments() {
   console.log('\n🔄 Now creating vector store...');
 
   // Create a vector store with all files
-  const vectorStore = await openai.beta.vectorStores.create({
+  const vectorStore = await openai.vectorStores.create({
     name: 'Dr. Leeron Medical Documents',
     file_ids: uploadedFileIds,
   });

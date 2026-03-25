@@ -19,10 +19,10 @@ export async function POST(req: NextRequest) {
             name: vectorStore.name,
             status: vectorStore.status,
         });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error creating vector store:', error);
         return NextResponse.json(
-            { error: error.message || 'Failed to create vector store' },
+            { error: error instanceof Error ? error.message : 'Failed to create vector store' },
             { status: 500 }
         );
     }
@@ -36,10 +36,10 @@ export async function GET() {
         return NextResponse.json({
             vectorStores: vectorStores.data,
         });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error listing vector stores:', error);
         return NextResponse.json(
-            { error: error.message || 'Failed to list vector stores' },
+            { error: error instanceof Error ? error.message : 'Failed to list vector stores' },
             { status: 500 }
         );
     }
