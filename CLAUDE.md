@@ -17,12 +17,13 @@ This project implements a **VoiceRAG** (Voice + Retrieval Augmented Generation) 
 ```
 ┌─────────────────┐     WebSocket      ┌─────────────────┐     WebSocket     ┌──────────────────┐
 │                 │ ◄─────────────────► │                 │ ◄────────────────► │                  │
-│  Browser Client │    (Proxy Layer)   │  Next.js Server │   (Realtime API)  │  OpenAI Realtime │
-│  (React + Web   │                    │  /api/realtime  │                   │  API             │
-│   Audio API)    │                    │                 │                   │                  │
+│  Browser Client │    (Proxy Layer)   │  Custom Node    │   (Realtime API)  │  OpenAI Realtime │
+│  (React + Web   │                    │  server.ts      │                   │  API             │
+│   Audio API)    │                    │  (HTTP + WS)    │                   │                  │
 └─────────────────┘                    └─────────────────┘                   └──────────────────┘
                                               │
-                                              │ File Search Tool
+                                              │ OpenAI Responses API
+                                              │ with file_search tool
                                               ▼
                                        ┌─────────────────┐
                                        │  OpenAI Vector  │
@@ -31,6 +32,23 @@ This project implements a **VoiceRAG** (Voice + Retrieval Augmented Generation) 
                                        │   Base)         │
                                        └─────────────────┘
 ```
+
+### Custom Server & WebSocket Proxy (`server.ts`)
+
+The `/api/realtime` WebSocket endpoint is **not** a Next.js API route. It is handled by a custom Node.js HTTP server in `server.ts` that wraps the Next.js app. This is necessary because Next.js does not natively support WebSocket upgrade requests.
+
+The server works as follows:
+1. Creates a Node.js `http.Server` and uses `next()` + `app.getRequestHandler()` to serve Next.js pages for normal HTTP requests
+2. Attaches a `ws` `WebSocketServer` in `noServer` mode
+3. Listens for the `upgrade` event on the HTTP server — requests to `/api/realtime` are upgraded to WebSocket connections; all other upgrade requests are passed through (for Next.js HMR)
+4. On client WebSocket connection, opens a second WebSocket to the OpenAI Realtime API (`wss://api.openai.com/v1/realtime`)
+5. Configures the OpenAI session with system prompt, voice settings, VAD, and custom function-calling tools (`search`, `report_grounding`)
+6. Relays messages bidirectionally between the browser client and OpenAI
+7. Intercepts `response.function_call_arguments.done` events to execute tool calls server-side (vector store search via OpenAI Responses API) before forwarding results back to OpenAI
+
+**Dev command:** `tsx watch server.ts` (not `next dev`) — this runs the custom server with hot reload.
+
+**Important:** Because this is a custom server, `next dev` alone will NOT provide the WebSocket endpoint. Always use `npm run dev` which runs `tsx watch server.ts`.
 
 ### Audio Flow
 
@@ -68,55 +86,52 @@ case 'input_audio_buffer.speech_started':
 
 ### Knowledge Base Integration (RAG)
 
-The Realtime API is configured with a file search tool that queries a vector store containing RANZCP MEQ exam materials:
+The Realtime API session is configured with two custom function-calling tools (`search` and `report_grounding`) defined in `server.ts`. When the AI decides to search:
 
-```typescript
-// Server-side session configuration
-tools: [
-  {
-    type: 'file_search',
-    vector_store_ids: [process.env.OPENAI_VECTOR_STORE_ID],
-  },
-],
-```
-
-When the AI needs to reference exam materials, marking guides, or clinical scenarios, it automatically searches the vector store and grounds its responses in the retrieved content.
+1. OpenAI Realtime API emits a `response.function_call_arguments.done` event with tool name `search`
+2. `server.ts` intercepts this and calls `performSearch()`, which uses the **OpenAI Responses API** (`openai.responses.create()`) with `file_search` tool against the vector store (`VECTOR_STORE_ID`)
+3. Search results (filenames, content, relevance scores) are sent back to OpenAI as a `function_call_output`
+4. A `search.completed` event is also sent to the browser client for UI feedback
+5. After responding, the AI calls `report_grounding` to cite sources, which are forwarded to the client as `grounding.sources` events for display
 
 ## Project Structure
 
 ```
 drleeron/
+├── server.ts                   # Custom Node.js server (HTTP + WebSocket proxy)
 ├── app/
 │   ├── api/
-│   │   ├── realtime/
-│   │   │   └── route.ts      # WebSocket proxy to OpenAI Realtime API
 │   │   ├── chat/
 │   │   │   └── route.ts      # Text chat endpoint (non-realtime)
 │   │   ├── transcribe/
 │   │   │   └── route.ts      # Whisper speech-to-text
-│   │   └── speak/
-│   │       └── route.ts      # TTS endpoint
+│   │   ├── speak/
+│   │   │   └── route.ts      # TTS endpoint
+│   │   └── vector-store/     # Vector store management API
 │   ├── realtime/
 │   │   ├── page.tsx          # Voice conversation UI
 │   │   └── layout.tsx        # Page metadata
-│   ├── page.tsx              # Text chat UI
+│   ├── text/
+│   │   └── page.tsx          # Text chat UI
+│   ├── page.tsx              # Landing/home page
 │   └── layout.tsx            # Root layout
 ├── components/
 │   └── ui/                   # shadcn/ui components
 ├── lib/
 │   └── utils.ts              # Utility functions
 └── scripts/
-    └── upload-to-vector-store.ts  # Vector store management
+    └── upload-documents.ts   # Vector store document upload
 ```
 
 ## Key Files
 
-### `/app/api/realtime/route.ts`
-WebSocket proxy that:
-- Authenticates with OpenAI Realtime API
-- Configures session with system prompt, voice, and tools
-- Relays messages bidirectionally between client and OpenAI
-- Handles connection lifecycle
+### `/server.ts`
+Custom Node.js HTTP server that:
+- Wraps Next.js via `next()` + `app.getRequestHandler()` for normal page/API serving
+- Handles WebSocket upgrade requests on `/api/realtime` (this is NOT a Next.js API route)
+- Proxies WebSocket messages between browser client and OpenAI Realtime API
+- Executes server-side function calls (`search`, `report_grounding`) using OpenAI Responses API with `file_search`
+- Configures the Realtime API session (system prompt, voice, VAD, tools)
 
 ### `/app/realtime/page.tsx`
 React component implementing:
@@ -131,8 +146,10 @@ React component implementing:
 
 ```env
 OPENAI_API_KEY=sk-...
-OPENAI_VECTOR_STORE_ID=vs_...
+VECTOR_STORE_ID=vs_...
 ```
+
+Loaded via `dotenv` from `.env.local` in `server.ts`.
 
 ## Audio Specifications
 
