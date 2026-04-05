@@ -4,8 +4,8 @@ import { searchKnowledgeBase } from '@/lib/actions/realtime';
 // POST /api/realtime/search — query the vector store
 export async function POST(request: NextRequest) {
   try {
-    const { query } = await request.json();
-    const result = await searchKnowledgeBase(query);
+    const { query, vectorStoreId } = await request.json();
+    const result = await searchKnowledgeBase(query, vectorStoreId);
     return NextResponse.json(result);
   } catch (err) {
     console.error('Search error:', err);

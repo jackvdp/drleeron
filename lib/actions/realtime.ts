@@ -107,9 +107,9 @@ export async function createRealtimeSession() {
       input_audio_transcription: { model: 'whisper-1' },
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.5,
+        threshold: 0.8,
         prefix_padding_ms: 300,
-        silence_duration_ms: 500,
+        silence_duration_ms: 700,
       },
       tools: REALTIME_TOOLS,
       tool_choice: 'auto',
@@ -134,7 +134,7 @@ interface SearchResult {
   relevanceScore: string;
 }
 
-export async function searchKnowledgeBase(query: string): Promise<{
+export async function searchKnowledgeBase(query: string, explicitVectorStoreId?: string | null): Promise<{
   success: boolean;
   query: string;
   resultCount: number;
@@ -145,7 +145,7 @@ export async function searchKnowledgeBase(query: string): Promise<{
     throw new Error('Missing query parameter');
   }
 
-  const vectorStoreId = await resolveVectorStoreId();
+  const vectorStoreId = explicitVectorStoreId || await resolveVectorStoreId();
   if (!vectorStoreId) {
     return {
       success: false,

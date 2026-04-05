@@ -1,11 +1,22 @@
 'use client';
 
-import { useState } from 'react';
-import { Phone, PhoneOff, Mic, BookOpen, ArrowLeft } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Phone, PhoneOff, Mic, BookOpen, ArrowLeft, Database, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 import { useRealtime } from '@/lib/hooks/use-realtime';
 
+interface VectorStore {
+  id: string;
+  name: string;
+  status: string;
+}
+
 export default function RealtimeChat() {
+  const [vectorStores, setVectorStores] = useState<VectorStore[]>([]);
+  const [selectedStore, setSelectedStore] = useState<string | null>(null);
+  const [showStoreDropdown, setShowStoreDropdown] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+
   const {
     status,
     activityState,
@@ -15,20 +26,37 @@ export default function RealtimeChat() {
     error,
     connect,
     disconnect,
-  } = useRealtime();
+  } = useRealtime(selectedStore);
+
+  // Load vector stores on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const response = await fetch('/api/vector-store');
+        const data = await response.json();
+        const stores = data.vectorStores || [];
+        setVectorStores(stores);
+        if (stores.length > 0) {
+          setSelectedStore(stores[0].id);
+        }
+      } catch (err) {
+        console.error('Error loading vector stores:', err);
+      }
+    })();
+  }, []);
+
+  const selectedStoreName = vectorStores.find((s) => s.id === selectedStore)?.name;
 
   const getStatusText = () => {
     if (status === 'connecting') return 'Connecting...';
     if (status === 'error') return 'Connection error';
     if (status === 'disconnected') return 'Disconnected';
-    if (activityState === 'listening') return 'Listening...';
     if (activityState === 'searching') return 'Searching knowledge base...';
+    if (activityState === 'listening') return 'Listening...';
     if (activityState === 'thinking') return 'Thinking...';
     if (activityState === 'speaking') return 'Speaking...';
     return 'Ready to listen';
   };
-
-  const [showTranscript, setShowTranscript] = useState(false);
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden">
@@ -53,13 +81,55 @@ export default function RealtimeChat() {
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4">
 
         {/* Title */}
-        <div className="text-center mb-8">
+        <div className="text-center mb-6">
           <h1 className="text-4xl font-light text-white/90 tracking-wide">Dr Leeron</h1>
           <p className="text-white/50 text-sm mt-2 mb-4">RANZCP MEQ Voice Tutor</p>
           <p className="text-white/40 text-sm max-w-md mx-auto leading-relaxed">
             Practice for your RANZCP MEQ exam with AI-guided Socratic questioning.
             Speak naturally and I&apos;ll help you work through clinical scenarios.
           </p>
+        </div>
+
+        {/* Knowledge base selector */}
+        <div className="relative mb-6">
+          <button
+            onClick={() => setShowStoreDropdown(!showStoreDropdown)}
+            disabled={status === 'connected'}
+            className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all duration-300 ${
+              selectedStore
+                ? 'bg-green-500/15 border border-green-500/25 text-green-300'
+                : 'bg-white/5 border border-white/10 text-white/50'
+            } ${status === 'connected' ? 'opacity-60 cursor-not-allowed' : 'hover:bg-white/10'}`}
+          >
+            <Database className="w-4 h-4" />
+            <span className="text-sm">{selectedStoreName || 'Select Knowledge Base'}</span>
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showStoreDropdown ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showStoreDropdown && status !== 'connected' && (
+            <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-64 bg-black/60 backdrop-blur-xl rounded-xl border border-white/10 p-2 z-30">
+              {vectorStores.length === 0 ? (
+                <p className="text-white/40 text-sm text-center py-3">No knowledge bases available</p>
+              ) : (
+                vectorStores.map((store) => (
+                  <button
+                    key={store.id}
+                    onClick={() => {
+                      setSelectedStore(store.id);
+                      setShowStoreDropdown(false);
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all ${
+                      selectedStore === store.id
+                        ? 'bg-green-500/20 text-green-300'
+                        : 'text-white/70 hover:bg-white/10'
+                    }`}
+                  >
+                    {store.name}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
         </div>
 
         {/* Central Orb */}
@@ -157,7 +227,14 @@ export default function RealtimeChat() {
             {getStatusText()}
           </p>
 
-          {searchStatus && (
+          {/* Search feedback */}
+          {activityState === 'searching' && (
+            <p className="text-amber-300/60 text-sm mt-2 animate-pulse">
+              Retrieving information from knowledge base...
+            </p>
+          )}
+
+          {searchStatus && activityState !== 'searching' && (
             <p className="text-white/40 text-sm mt-2">
               Found {searchStatus.resultCount} results
             </p>
@@ -176,18 +253,29 @@ export default function RealtimeChat() {
         )}
 
         {status === 'disconnected' && (
-          <button
-            onClick={connect}
-            className="flex items-center gap-2 px-6 py-3 rounded-full bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 text-green-300 transition-all duration-300 hover:scale-105"
-          >
-            <Phone className="w-5 h-5" />
-            <span>Start Session</span>
-          </button>
+          <div className="flex flex-col items-center gap-3">
+            <button
+              onClick={connect}
+              disabled={!selectedStore}
+              className={`flex items-center gap-2 px-6 py-3 rounded-full transition-all duration-300 ${
+                selectedStore
+                  ? 'bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 text-green-300 hover:scale-105'
+                  : 'bg-white/5 border border-white/10 text-white/30 cursor-not-allowed'
+              }`}
+            >
+              <Phone className="w-5 h-5" />
+              <span>Start Session</span>
+            </button>
+            {!selectedStore && (
+              <p className="text-white/40 text-xs">Select a knowledge base to start</p>
+            )}
+          </div>
         )}
 
         {status === 'error' && (
           <button
             onClick={connect}
+            disabled={!selectedStore}
             className="flex items-center gap-2 px-6 py-3 rounded-full bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 text-amber-300 transition-all duration-300 hover:scale-105"
           >
             <Phone className="w-5 h-5" />

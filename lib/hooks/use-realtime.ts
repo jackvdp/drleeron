@@ -34,7 +34,7 @@ interface RealtimeEvent {
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
-export function useRealtime() {
+export function useRealtime(vectorStoreId?: string | null) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -71,14 +71,14 @@ export function useRealtime() {
       const response = await fetch('/api/realtime/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, vectorStoreId }),
       });
       return await response.json();
     } catch (err) {
       console.error('Search failed:', err);
       return { success: false, error: 'Search failed', results: [] };
     }
-  }, []);
+  }, [vectorStoreId]);
 
   // ─── Handle function calls from OpenAI ───────────────────────────────────
 
