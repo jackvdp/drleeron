@@ -2,7 +2,7 @@
 
 A voice-enabled AI chatbot built to help medical students learn through interactive conversations. Dr. Leeron uses advanced AI to break down complex medical concepts and guide students through their studies.
 
-## Tech Stack
+## Tech Stack:
 
 ### Frontend
 - **Next.js 15.5.6** - React framework with App Router
