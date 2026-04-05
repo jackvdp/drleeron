@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Mic, Send, Volume2, Database, X, MessageSquare, BookOpen } from 'lucide-react';
+import { Mic, Send, Volume2, Database, X, MessageSquare, BookOpen, ArrowLeft } from 'lucide-react';
+import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 
 type MessagePart = {
@@ -314,6 +315,14 @@ export default function Chat() {
       {/* Content */}
       <div className="relative z-10 flex flex-col h-screen max-w-4xl mx-auto p-4">
         
+        {/* Back button */}
+        <Link
+          href="/"
+          className="fixed top-4 left-4 p-3 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 hover:text-white/80 transition-all duration-300 z-20"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </Link>
+
         {/* Header */}
         <div className="text-center py-6">
           <h1 className="text-4xl font-light text-white/90 tracking-wide">Dr Leeron</h1>

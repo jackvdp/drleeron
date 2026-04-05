@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Phone, PhoneOff, Mic, BookOpen } from 'lucide-react';
+import { Phone, PhoneOff, Mic, BookOpen, ArrowLeft } from 'lucide-react';
+import Link from 'next/link';
 import { useRealtime } from '@/lib/hooks/use-realtime';
 
 export default function RealtimeChat() {
@@ -221,6 +222,14 @@ export default function RealtimeChat() {
             </div>
           </div>
         )}
+
+        {/* Back button */}
+        <Link
+          href="/"
+          className="fixed top-4 left-4 p-3 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 hover:text-white/80 transition-all duration-300"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </Link>
 
         {/* Transcript toggle */}
         <button
