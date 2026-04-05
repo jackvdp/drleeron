@@ -134,8 +134,9 @@ export default function RealtimeChat() {
     setError(null);
 
     try {
-      // Initialize audio context
+      // Initialize audio context (must be resumed after user gesture in Chrome)
       audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      await audioContextRef.current.resume();
 
       // Get microphone access
       mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
@@ -225,13 +226,12 @@ export default function RealtimeChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-connect on mount
+  // Clean up on unmount
   useEffect(() => {
-    connect();
     return () => {
       disconnect();
     };
-  }, [connect, disconnect]);
+  }, [disconnect]);
 
   // Start capturing audio from microphone
   const startAudioCapture = useCallback(() => {

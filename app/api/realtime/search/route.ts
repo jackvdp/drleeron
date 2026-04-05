@@ -2,12 +2,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID || '';
 
 interface SearchResult {
   filename: string;
   content: string;
   score?: number;
+}
+
+// Resolve the vector store ID: use env var if set, otherwise fetch the first available one
+async function getVectorStoreId(): Promise<string | null> {
+  if (process.env.VECTOR_STORE_ID) {
+    return process.env.VECTOR_STORE_ID;
+  }
+
+  try {
+    const vectorStores = await openai.vectorStores.list();
+    if (vectorStores.data.length > 0) {
+      return vectorStores.data[0].id;
+    }
+  } catch (err) {
+    console.error('Error listing vector stores:', err);
+  }
+
+  return null;
 }
 
 // POST /api/realtime/search — execute vector store search server-side
@@ -19,10 +36,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing query parameter' }, { status: 400 });
     }
 
-    if (!VECTOR_STORE_ID) {
+    const vectorStoreId = await getVectorStoreId();
+    if (!vectorStoreId) {
       return NextResponse.json({
         results: [],
-        message: 'No knowledge base configured. Please set VECTOR_STORE_ID.',
+        message: 'No knowledge base configured. Set VECTOR_STORE_ID or create a vector store.',
       });
     }
 
@@ -40,11 +58,12 @@ If no relevant information is found, say so clearly.`,
       tools: [
         {
           type: 'file_search',
-          vector_store_ids: [VECTOR_STORE_ID],
+          vector_store_ids: [vectorStoreId],
           max_num_results: 10,
         },
       ],
       tool_choice: 'required',
+      include: ['file_search_call.results'],
     });
 
     const results: SearchResult[] = [];
