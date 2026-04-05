@@ -24,6 +24,11 @@ interface SearchStatus {
   timestamp: Date;
 }
 
+interface RealtimeEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
 export default function RealtimeChat() {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [isListening, setIsListening] = useState(false);
@@ -42,6 +47,7 @@ export default function RealtimeChat() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackTimeRef = useRef<number>(0);
   const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+
   // Get the current activity state for the orb
   const getActivityState = () => {
     if (isListening) return 'listening';
@@ -53,7 +59,74 @@ export default function RealtimeChat() {
 
   const activityState = getActivityState();
 
-  // Connect to the WebSocket server
+  // Execute a search tool call via our server-side API
+  const executeSearch = useCallback(async (query: string): Promise<object> => {
+    try {
+      const response = await fetch('/api/realtime/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      return await response.json();
+    } catch (err) {
+      console.error('Search failed:', err);
+      return { success: false, error: 'Search failed', results: [] };
+    }
+  }, []);
+
+  // Handle function calls from the Realtime API
+  const handleFunctionCall = useCallback(async (event: RealtimeEvent) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const callId = event.call_id as string;
+    const name = event.name as string;
+    const args = JSON.parse(event.arguments as string);
+
+    console.log(`Function call: ${name}`, args);
+
+    let result: object;
+
+    if (name === 'search') {
+      setIsSearching(true);
+      result = await executeSearch(args.query);
+      setIsSearching(false);
+
+      const searchResult = result as { resultCount?: number };
+      setSearchStatus({
+        query: args.query,
+        resultCount: searchResult.resultCount || 0,
+        timestamp: new Date(),
+      });
+    } else if (name === 'report_grounding') {
+      const groundingSources = (args.sources || []).map(
+        (source: { title: string; excerpt?: string }, index: number) => ({
+          id: `source-${Date.now()}-${index}`,
+          title: source.title || 'Unknown Document',
+          excerpt: source.excerpt || '',
+        })
+      );
+      setSources((prev) => [...prev, ...groundingSources]);
+      result = { success: true, sourcesReported: groundingSources.length };
+    } else {
+      result = { error: `Unknown function: ${name}` };
+    }
+
+    // Send function output back to OpenAI
+    ws.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify(result),
+      },
+    }));
+
+    // Trigger response generation
+    ws.send(JSON.stringify({ type: 'response.create' }));
+  }, [executeSearch]);
+
+  // Connect directly to OpenAI Realtime API via ephemeral token
   const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
@@ -74,21 +147,43 @@ export default function RealtimeChat() {
         },
       });
 
-      // Connect to our WebSocket proxy
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/realtime`;
-      console.log('Connecting to WebSocket:', wsUrl);
-      const ws = new WebSocket(wsUrl);
+      // Get ephemeral token from our API
+      const tokenResponse = await fetch('/api/realtime', { method: 'POST' });
+      if (!tokenResponse.ok) {
+        throw new Error('Failed to get session token');
+      }
+      const session = await tokenResponse.json();
+      const ephemeralKey = session.client_secret?.value;
+      if (!ephemeralKey) {
+        throw new Error('No ephemeral key in session response');
+      }
+
+      // Connect directly to OpenAI Realtime API
+      const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`;
+      console.log('Connecting to OpenAI Realtime API');
+      const ws = new WebSocket(wsUrl, [
+        'realtime',
+        `openai-insecure-api-key.${ephemeralKey}`,
+        'openai-beta.realtime-v1',
+      ]);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('Connected to realtime server');
+        console.log('Connected to OpenAI Realtime API');
         setStatus('connected');
         startAudioCapture();
       };
 
       ws.onmessage = (event) => {
-        handleServerMessage(JSON.parse(event.data));
+        const data = JSON.parse(event.data);
+
+        // Intercept function calls and handle them client-side
+        if (data.type === 'response.function_call_arguments.done') {
+          handleFunctionCall(data);
+          return;
+        }
+
+        handleServerMessage(data);
       };
 
       ws.onerror = (err) => {
@@ -108,7 +203,7 @@ export default function RealtimeChat() {
       setStatus('error');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [handleFunctionCall]);
 
   // Disconnect from the WebSocket server
   const disconnect = useCallback(() => {
@@ -176,7 +271,6 @@ export default function RealtimeChat() {
 
   // Stop all currently playing audio (for interruption/barge-in)
   const stopAllAudio = useCallback(() => {
-    // Stop all active audio sources
     activeAudioSourcesRef.current.forEach((source) => {
       try {
         source.stop();
@@ -185,12 +279,11 @@ export default function RealtimeChat() {
       }
     });
     activeAudioSourcesRef.current = [];
-    
-    // Reset playback time to now
+
     if (audioContextRef.current) {
       playbackTimeRef.current = audioContextRef.current.currentTime;
     }
-    
+
     setIsSpeaking(false);
   }, []);
 
@@ -240,10 +333,8 @@ export default function RealtimeChat() {
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
 
-      // Track this source for potential interruption
       activeAudioSourcesRef.current.push(source);
-      
-      // Remove from tracking when done
+
       source.onended = () => {
         const index = activeAudioSourcesRef.current.indexOf(source);
         if (index > -1) {
@@ -251,7 +342,6 @@ export default function RealtimeChat() {
         }
       };
 
-      // Schedule playback
       const startTime = Math.max(playbackTimeRef.current, audioContextRef.current.currentTime);
       source.start(startTime);
       playbackTimeRef.current = startTime + audioBuffer.duration;
@@ -276,12 +366,11 @@ export default function RealtimeChat() {
       case 'input_audio_buffer.speech_started':
         console.log('User started speaking');
         setIsListening(true);
-        
+
         // BARGE-IN: Stop AI audio and cancel response when user starts speaking
         stopAllAudio();
         cancelResponse();
-        
-        // Clear sources and search status for new conversation turn
+
         setSources([]);
         setSearchStatus(null);
         setIsSearching(false);
@@ -290,29 +379,16 @@ export default function RealtimeChat() {
 
       case 'input_audio_buffer.speech_stopped':
         console.log('User stopped speaking');
-        // User finished speaking - AI will start thinking
         setIsThinking(true);
         break;
 
       case 'input_audio_buffer.committed':
-        // Audio was committed for processing
         setIsThinking(true);
         break;
 
       case 'response.created':
-        // Response is being generated - might be searching
         setIsSearching(true);
         setIsThinking(true);
-        break;
-
-      case 'search.completed':
-        setIsSearching(false);
-        setSearchStatus({
-          query: event.query as string,
-          resultCount: event.resultCount as number,
-          timestamp: new Date(),
-        });
-        console.log(`Search completed: ${event.resultCount} results for "${event.query}"`);
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
@@ -346,10 +422,9 @@ export default function RealtimeChat() {
         break;
 
       case 'response.audio.delta':
-        // Audio chunk from assistant - play it
         playAudioChunk(event.delta as string);
         setIsSpeaking(true);
-        setIsThinking(false); // No longer thinking once audio starts
+        setIsThinking(false);
         break;
 
       case 'response.audio.done':
@@ -365,18 +440,10 @@ export default function RealtimeChat() {
         break;
 
       case 'response.cancelled':
-        // Response was cancelled (e.g., due to barge-in)
         console.log('Response cancelled');
         setIsSpeaking(false);
         setIsSearching(false);
         setIsThinking(false);
-        break;
-
-      case 'grounding.sources':
-        const groundingSources = event.sources as GroundingSource[];
-        if (groundingSources && groundingSources.length > 0) {
-          setSources((prev) => [...prev, ...groundingSources]);
-        }
         break;
 
       case 'error':
@@ -409,7 +476,7 @@ export default function RealtimeChat() {
   return (
     <div className="relative min-h-screen w-full overflow-hidden">
       {/* Pine green gradient background with radial lighter center */}
-      <div 
+      <div
         className="absolute inset-0"
         style={{
           background: `
@@ -427,13 +494,13 @@ export default function RealtimeChat() {
 
       {/* Content */}
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4">
-        
+
         {/* Title */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-light text-white/90 tracking-wide">Dr Leeron</h1>
           <p className="text-white/50 text-sm mt-2 mb-4">RANZCP MEQ Voice Tutor</p>
           <p className="text-white/40 text-sm max-w-md mx-auto leading-relaxed">
-            Practice for your RANZCP MEQ exam with AI-guided Socratic questioning. 
+            Practice for your RANZCP MEQ exam with AI-guided Socratic questioning.
             Speak naturally and I&apos;ll help you work through clinical scenarios.
           </p>
         </div>
@@ -441,15 +508,15 @@ export default function RealtimeChat() {
         {/* Central Orb */}
         <div className="relative mb-8">
           {/* Outer glow rings */}
-          <div 
+          <div
             className={`absolute inset-0 rounded-full transition-all duration-1000 ${
               activityState === 'listening' ? 'animate-ping' : ''
             }`}
             style={{
               width: '200px',
               height: '200px',
-              background: activityState === 'listening' 
-                ? 'rgba(134, 239, 172, 0.2)' 
+              background: activityState === 'listening'
+                ? 'rgba(134, 239, 172, 0.2)'
                 : activityState === 'speaking'
                 ? 'rgba(147, 197, 253, 0.2)'
                 : activityState === 'thinking' || activityState === 'searching'
@@ -463,10 +530,10 @@ export default function RealtimeChat() {
           />
 
           {/* Main orb */}
-          <div 
+          <div
             className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 ${
-              activityState === 'speaking' ? 'scale-110' : 
-              activityState === 'listening' ? 'scale-105' : 
+              activityState === 'speaking' ? 'scale-110' :
+              activityState === 'listening' ? 'scale-105' :
               'scale-100'
             }`}
             style={{
@@ -536,7 +603,7 @@ export default function RealtimeChat() {
           }`}>
             {getStatusText()}
           </p>
-          
+
           {searchStatus && (
             <p className="text-white/40 text-sm mt-2">
               Found {searchStatus.resultCount} results
