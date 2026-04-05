@@ -1,6 +1,6 @@
 'use client';
 
-import { MessageSquare, Phone } from 'lucide-react';
+import { MessageSquare, Phone, Database } from 'lucide-react';
 import Link from 'next/link';
 
 export default function Home() {
@@ -112,8 +112,18 @@ export default function Home() {
           </Link>
         </div>
 
+        {/* Knowledge Base link */}
+        <div className="mt-8">
+          <Link href="/vector-store" className="group">
+            <div className="flex items-center gap-3 px-5 py-3 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all duration-300">
+              <Database className="w-4 h-4 text-purple-300" />
+              <span className="text-white/60 text-sm group-hover:text-white/80 transition-colors">Manage Knowledge Base</span>
+            </div>
+          </Link>
+        </div>
+
         {/* Footer */}
-        <p className="mt-12 text-white/30 text-xs text-center">
+        <p className="mt-8 text-white/30 text-xs text-center">
           Powered by AI • Built for RANZCP exam preparation
         </p>
       </div>

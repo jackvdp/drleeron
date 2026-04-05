@@ -1,17 +1,17 @@
-import OpenAI from 'openai';
+import { NextResponse } from 'next/server';
+import { transcribeAudio } from '@/lib/actions/audio';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
+// POST /api/transcribe — convert audio to text (Whisper)
 export async function POST(req: Request) {
-  const formData = await req.formData();
-  const audio = formData.get('audio') as File;
-  
-  const transcription = await openai.audio.transcriptions.create({
-    file: audio,
-    model: 'whisper-1',
-  });
-
-  return Response.json({ text: transcription.text });
+  try {
+    const formData = await req.formData();
+    const text = await transcribeAudio(formData);
+    return NextResponse.json({ text });
+  } catch (error: unknown) {
+    console.error('Error transcribing:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Transcription failed' },
+      { status: 500 }
+    );
+  }
 }
